@@ -22,12 +22,8 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Mika+ Panes reads the current Finder selection so you can act on it from the overlay.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

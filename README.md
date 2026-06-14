@@ -1,38 +1,46 @@
 # Mika+ Panes
 
-A native macOS menu bar utility (Swift + SwiftPM) combining lightweight,
-hotkey-driven window tiling with a fast, keyboard-driven Finder overlay. No Dock
-icon (`LSUIElement`). Minimum macOS 14.
+A native macOS file browser app (Swift + SwiftPM) with a Dock icon and a
+Finder-like window: a favorites sidebar, a file list with live fuzzy search, and
+a live QuickLook preview pane. Keyboard-first, with mouse support. Minimum macOS 14.
 
-## Modules
+## Window
 
-- **Window Manager** — tile the focused window via global hotkeys (halves,
-  quarters, maximize, center, move to next/previous display). Multi-monitor aware;
-  uses the Accessibility API.
-- **Finder overlay** — a floating, non-activating panel opened by hotkey. Two
-  addressing modes:
-  1. *Own browser*: keyboard file-tree navigation from a root (home by default),
-     with live fuzzy search in the current directory.
-  2. *Finder selection*: act on the frontmost Finder window's current selection.
-  Actions: Reveal, Quick Look, Move to Trash, Copy/Move.
+```
+┌──────────────┬─────────────────────┬──────────────────┐
+│ Favorites    │ 📁 Documents        │   ┌───────────┐  │
+│ ⌂ Home    ⌘1 │ 📁 Projects      ▶  │   │ QuickLook │  │
+│ 🖥 Desktop ⌘2 │ 📄 notes.md  ◀──────│   │  preview  │  │
+│ 📄 Documents⌘3│ 📄 todo.txt         │   └───────────┘  │
+│ ⬇ Downloads ⌘4│                     │  notes.md        │
+│              │  [live fuzzy search]│  Kind · Size ·…  │
+└──────────────┴─────────────────────┴──────────────────┘
+```
 
-## Default hotkeys
+- **Sidebar** — favorites (Home, Desktop, Documents, Downloads, + configured
+  root). Click or `⌘1`…`⌘9` to jump.
+- **List** — type to fuzzy-filter the current directory. `↑/↓` move, `↩` open file /
+  descend into folder, `⌫` delete a search character or go to the parent folder,
+  `Esc` clears the search. Single-click selects, double-click opens.
+- **Preview** — inline QuickLook render of the highlighted item plus its name,
+  kind, size and modified date.
 
-| Action                | Shortcut            |
-|-----------------------|---------------------|
-| Halves                | `⌃⌥ + ← / → / ↑ / ↓` |
-| Quarters              | `⌃⌥ + U / I / J / K` |
-| Maximize              | `⌃⌥↩`               |
-| Center                | `⌃⌥C`               |
-| Move to next display  | `⌃⌥⌘→`              |
-| Move to prev display  | `⌃⌥⌘←`              |
-| Open Finder overlay   | `⌃⌥Space`           |
+## File actions
 
-### Overlay keys
+| Action          | Shortcut | Menu      |
+|-----------------|----------|-----------|
+| Reveal in Finder| `⌘R`     | File      |
+| Quick Look      | `Space` / `⌘Y` | File |
+| Move to Trash   | `⌘⌫`     | File      |
+| Copy            | `⌘C`     | Edit      |
+| Cut             | `⌘X`     | Edit      |
+| Paste (into current folder) | `⌘V` | Edit |
+| Enclosing folder| `⌘↑`     | Go        |
+| Home            | `⇧⌘H`    | Go        |
 
-`↑/↓` move · `↩` open/descend · `⌫` delete query char / go up · type = fuzzy
-search · `Space` Quick Look · `⌘R` reveal · `⌘⌫` trash · `⌘C` copy here ·
-`⌘M` move here · `⇥` toggle source (own browser ↔ Finder selection) · `Esc` close.
+Copy/Cut place an item on an internal clipboard; Paste copies (or moves, for Cut)
+it into the folder currently shown. `FileManager.moveItem` handles cross-volume
+moves as copy-then-delete.
 
 ## Build & run
 
@@ -42,21 +50,9 @@ search · `Space` Quick Look · `⌘R` reveal · `⌘⌫` trash · `⌘C` copy h
 open build/MikaPanes.app
 ```
 
-The app must be a signed `.app` bundle (not a bare SwiftPM binary) for the
-Accessibility and Apple Events permissions to work. `bundle.sh` assembles the
-bundle from `Resources/Info.plist` + `Resources/MikaPanes.entitlements` and
-ad-hoc signs it.
-
-## Permissions
-
-- **Accessibility** (required) — to move/resize windows. The app prompts on first
-  run and the menu bar item shows live status; the onboarding window deep-links to
-  System Settings.
-- **Full Disk Access** (optional) — lets the overlay act on protected locations.
-- **Automation** (Finder) — prompted the first time you read the Finder selection.
-
-> Ad-hoc signatures change on every rebuild, so macOS may re-prompt for
-> Accessibility after a rebuild. Installing to `/Applications` is a bit more stable.
+`bundle.sh` assembles a `.app` from `Resources/Info.plist` and ad-hoc signs it.
+The app is not sandboxed (so it can browse arbitrary locations) and needs no
+special permissions for normal browsing.
 
 ## Tests
 
@@ -64,8 +60,7 @@ ad-hoc signs it.
 ./Scripts/test.sh
 ```
 
-Unit tests cover the pure logic: `FuzzyMatcher` scoring, the AX↔Cocoa coordinate
-flip in `ScreenGeometry`, and `TilePreset` frame geometry. The wrapper points the
+Unit tests cover the `FuzzyMatcher` scoring logic. The wrapper points the
 toolchain at the Command Line Tools' bundled Swift Testing framework; with full
 Xcode installed, plain `swift test` also works.
 
@@ -73,9 +68,8 @@ Xcode installed, plain `swift test` also works.
 
 ```
 Sources/MikaPanes/
-  App/        — entry point, AppDelegate, status item, onboarding
-  Services/   — HotKeyManager (Carbon), PermissionsService, SettingsStore
-  WindowManager/ — AXWindowService, ScreenGeometry, TilePreset, WindowTiler
-  Overlay/    — OverlayPanel/Controller, SwiftUI view, FileBrowserModel,
-                FuzzyMatcher, Finder selection, file actions, Quick Look
+  App/        — entry point, AppDelegate, BrowserWindowController (window + menu)
+  Services/   — SettingsStore (browser root)
+  Overlay/    — BrowserView (SwiftUI), FileBrowserModel, FuzzyMatcher,
+                FileActionsService, QuickLookController
 ```

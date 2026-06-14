@@ -1,14 +1,12 @@
 import AppKit
 
-// LSUIElement is set in Info.plist; `.accessory` is the runtime equivalent so the
-// app also behaves correctly when launched as a bare binary during development.
-//
-// Top-level code runs on the main thread; assert that to the compiler so we can
-// touch main-actor-isolated API (NSApplication, AppDelegate) directly.
+// A regular Dock app (no LSUIElement): shows a Dock icon, a menu bar and a
+// normal window. Top-level code runs on the main thread; assert that so we can
+// touch main-actor-isolated API directly.
 MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate
-    app.setActivationPolicy(.accessory)
+    app.setActivationPolicy(.regular)
     app.run()
 }

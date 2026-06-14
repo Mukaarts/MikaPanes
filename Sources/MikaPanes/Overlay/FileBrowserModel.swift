@@ -1,21 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Which item(s) overlay actions operate on.
-enum OverlaySourceMode: String {
-    case ownBrowser
-    case finderSelection
-
-    var label: String {
-        switch self {
-        case .ownBrowser: return "Browser"
-        case .finderSelection: return "Finder selection"
-        }
-    }
-}
-
-/// Backing state for the overlay: directory contents, fuzzy filter, selection,
-/// and the file actions triggered from the keyboard.
+/// Backing state for the browser window: directory contents, fuzzy filter,
+/// selection, an internal clipboard for copy/cut/paste, and the file actions
+/// triggered from the keyboard.
 @MainActor
 final class FileBrowserModel: ObservableObject {
 
@@ -26,23 +14,55 @@ final class FileBrowserModel: ObservableObject {
         var id: URL { url }
     }
 
+    struct Favorite: Identifiable, Hashable {
+        let name: String
+        let systemImage: String
+        let url: URL
+        var id: URL { url }
+    }
+
+    private enum ClipboardMode { case copy, cut }
+
     @Published var currentURL: URL
     @Published private(set) var entries: [Entry] = []
     @Published var query: String = "" { didSet { selectionIndex = 0 } }
     @Published var selectionIndex: Int = 0
-    @Published var sourceMode: OverlaySourceMode = .ownBrowser
-    @Published private(set) var finderSelection: [URL] = []
     @Published var statusMessage: String?
+
+    let favorites: [Favorite]
+    private var clipboard: (urls: [URL], mode: ClipboardMode)?
 
     init(root: URL) {
         self.currentURL = root
+        self.favorites = Self.defaultFavorites(root: root)
         reloadDirectory()
+    }
+
+    private static func defaultFavorites(root: URL) -> [Favorite] {
+        let fm = FileManager.default
+        func dir(_ d: FileManager.SearchPathDirectory) -> URL? {
+            fm.urls(for: d, in: .userDomainMask).first
+        }
+        var favorites: [Favorite] = [
+            Favorite(name: "Home", systemImage: "house", url: fm.homeDirectoryForCurrentUser)
+        ]
+        if let url = dir(.desktopDirectory) {
+            favorites.append(Favorite(name: "Desktop", systemImage: "menubar.dock.rectangle", url: url))
+        }
+        if let url = dir(.documentDirectory) {
+            favorites.append(Favorite(name: "Documents", systemImage: "doc", url: url))
+        }
+        if let url = dir(.downloadsDirectory) {
+            favorites.append(Favorite(name: "Downloads", systemImage: "arrow.down.circle", url: url))
+        }
+        if !favorites.contains(where: { $0.url.standardizedFileURL == root.standardizedFileURL }) {
+            favorites.append(Favorite(name: root.lastPathComponent, systemImage: "star", url: root))
+        }
+        return favorites
     }
 
     // MARK: - Derived state
 
-    /// Entries filtered by the fuzzy query and ranked by score (directories first
-    /// when scores tie).
     var filteredEntries: [Entry] {
         guard !query.isEmpty else { return entries }
         return entries
@@ -51,7 +71,9 @@ final class FileBrowserModel: ObservableObject {
                 return (entry, score)
             }
             .sorted { lhs, rhs in
-                lhs.1 != rhs.1 ? lhs.1 > rhs.1 : lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
+                lhs.1 != rhs.1
+                    ? lhs.1 > rhs.1
+                    : lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
             }
             .map(\.0)
     }
@@ -62,15 +84,9 @@ final class FileBrowserModel: ObservableObject {
         return list[selectionIndex]
     }
 
-    /// URLs that actions apply to, depending on the source mode.
-    var actionTargets: [URL] {
-        switch sourceMode {
-        case .ownBrowser:
-            return selectedEntry.map { [$0.url] } ?? []
-        case .finderSelection:
-            return finderSelection
-        }
-    }
+    var previewURL: URL? { selectedEntry?.url }
+
+    private var actionTargets: [URL] { selectedEntry.map { [$0.url] } ?? [] }
 
     // MARK: - Directory loading
 
@@ -94,15 +110,6 @@ final class FileBrowserModel: ObservableObject {
         selectionIndex = 0
     }
 
-    func refreshFinderSelection() {
-        finderSelection = FinderSelectionService.currentSelection()
-        if finderSelection.isEmpty {
-            statusMessage = "No Finder selection"
-        } else {
-            statusMessage = "\(finderSelection.count) item(s) from Finder"
-        }
-    }
-
     // MARK: - Navigation
 
     func moveSelection(by delta: Int) {
@@ -112,17 +119,12 @@ final class FileBrowserModel: ObservableObject {
     }
 
     /// Enter: descend into a directory (clearing the query) or open a file.
-    /// Returns `true` if the overlay should close (a file was opened).
-    func activateSelection() -> Bool {
-        guard let entry = selectedEntry else { return false }
+    func activateSelection() {
+        guard let entry = selectedEntry else { return }
         if entry.isDirectory {
-            currentURL = entry.url
-            query = ""
-            reloadDirectory()
-            return false
+            navigate(to: entry.url)
         } else {
             NSWorkspace.shared.open(entry.url)
-            return true
         }
     }
 
@@ -140,66 +142,78 @@ final class FileBrowserModel: ObservableObject {
         let parent = currentURL.deletingLastPathComponent()
         guard parent.path != currentURL.path else { return }
         let previous = currentURL
-        currentURL = parent
-        query = ""
-        reloadDirectory()
-        // Highlight the directory we came from.
-        if let index = filteredEntries.firstIndex(where: { $0.url.standardizedFileURL == previous.standardizedFileURL }) {
+        navigate(to: parent)
+        if let index = filteredEntries.firstIndex(where: {
+            $0.url.standardizedFileURL == previous.standardizedFileURL
+        }) {
             selectionIndex = index
         }
     }
 
-    func appendToQuery(_ string: String) {
-        query.append(string)
+    func navigate(to url: URL) {
+        currentURL = url
+        query = ""
+        reloadDirectory()
     }
 
-    func toggleSourceMode() {
-        sourceMode = sourceMode == .ownBrowser ? .finderSelection : .ownBrowser
-        if sourceMode == .finderSelection {
-            refreshFinderSelection()
-        } else {
-            statusMessage = nil
+    func jumpToFavorite(_ index: Int) {
+        guard favorites.indices.contains(index) else { return }
+        navigate(to: favorites[index].url)
+    }
+
+    func select(_ entry: Entry) {
+        if let index = filteredEntries.firstIndex(of: entry) {
+            selectionIndex = index
         }
     }
 
+    func appendToQuery(_ string: String) { query.append(string) }
+
+    func clearQuery() { query = "" }
+
     // MARK: - Actions
 
-    func revealTargets() {
-        let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
-        FileActionsService.reveal(targets)
+    func revealSelection() {
+        guard !actionTargets.isEmpty else { NSSound.beep(); return }
+        FileActionsService.reveal(actionTargets)
     }
 
-    func trashTargets() {
-        let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
-        let result = FileActionsService.moveToTrash(targets)
+    func quickLookSelection() {
+        guard !actionTargets.isEmpty else { NSSound.beep(); return }
+        QuickLookController.shared.preview(actionTargets)
+    }
+
+    func trashSelection() {
+        guard !actionTargets.isEmpty else { NSSound.beep(); return }
+        let result = FileActionsService.moveToTrash(actionTargets)
         statusMessage = "Trashed \(result.summary)"
-        if sourceMode == .ownBrowser { reloadDirectory() }
-        else { refreshFinderSelection() }
-    }
-
-    func quickLookTargets() {
-        let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
-        QuickLookController.shared.preview(targets)
-    }
-
-    /// Copy/Move the source items into the directory currently shown in the browser.
-    func copyTargetsHere() {
-        let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
-        let result = FileActionsService.copy(targets, to: currentURL)
-        statusMessage = "Copied \(result.summary)"
         reloadDirectory()
     }
 
-    func moveTargetsHere() {
-        let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
-        let result = FileActionsService.move(targets, to: currentURL)
-        statusMessage = "Moved \(result.summary)"
+    func copySelection() {
+        guard let url = selectedEntry?.url else { NSSound.beep(); return }
+        clipboard = ([url], .copy)
+        statusMessage = "Copied \(url.lastPathComponent)"
+    }
+
+    func cutSelection() {
+        guard let url = selectedEntry?.url else { NSSound.beep(); return }
+        clipboard = ([url], .cut)
+        statusMessage = "Cut \(url.lastPathComponent)"
+    }
+
+    func paste() {
+        guard let clip = clipboard else { NSSound.beep(); return }
+        let result: FileActionsService.BatchResult
+        switch clip.mode {
+        case .copy:
+            result = FileActionsService.copy(clip.urls, to: currentURL)
+            statusMessage = "Pasted \(result.summary)"
+        case .cut:
+            result = FileActionsService.move(clip.urls, to: currentURL)
+            statusMessage = "Moved \(result.summary)"
+            clipboard = nil
+        }
         reloadDirectory()
-        if sourceMode == .finderSelection { refreshFinderSelection() }
     }
 }
