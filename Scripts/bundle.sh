@@ -40,6 +40,13 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 cp "${ROOT_DIR}/Resources/Info.plist" "${APP_DIR}/Contents/Info.plist"
 
+# App icon: generate on first run if missing, then copy into the bundle.
+if [[ ! -f "${ROOT_DIR}/Resources/AppIcon.icns" ]]; then
+  echo "==> AppIcon.icns missing; generating…"
+  "${SCRIPT_DIR}/make-icon.sh"
+fi
+cp "${ROOT_DIR}/Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+
 ENTITLEMENTS="${ROOT_DIR}/Resources/${APP_NAME}.entitlements"
 
 sign_app() {
