@@ -19,13 +19,15 @@ struct FileListView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         context.coordinator.apply(
-            entries: model.filteredEntries,
+            entries: model.displayedEntries,
             selectedURLs: model.selectedURLs,
             leadURL: model.leadSelectionURL,
             renamingURL: model.renamingURL,
             cutURLs: model.cutPendingURLs,
             sortField: model.sortField,
-            sortAscending: model.sortAscending
+            sortAscending: model.sortAscending,
+            isSearchMode: model.isDeepSearchActive,
+            locationRoot: model.currentURL
         )
     }
 }
@@ -70,6 +72,9 @@ extension FileListView {
         private var isUpdatingSortDescriptors = false
         private var activeRenameURL: URL?
         private var isCancellingRename = false
+        private var isSearchMode = false
+        private var locationRoot: URL?
+        private static let locationColumnID = NSUserInterfaceItemIdentifier("location")
 
         init(model: FileBrowserModel, keyHandler: @escaping (NSEvent) -> Bool) {
             self.model = model
@@ -137,9 +142,17 @@ extension FileListView {
             renamingURL: URL?,
             cutURLs newCutURLs: Set<URL>,
             sortField: SortField,
-            sortAscending: Bool
+            sortAscending: Bool,
+            isSearchMode newSearchMode: Bool,
+            locationRoot newLocationRoot: URL
         ) {
             guard let table = tableView else { return }
+
+            locationRoot = newLocationRoot
+            if newSearchMode != isSearchMode {
+                isSearchMode = newSearchMode
+                updateLocationColumn(in: table)
+            }
 
             let entriesChanged = newEntries != entries
             let cutChanged = newCutURLs != cutURLs
@@ -152,7 +165,8 @@ extension FileListView {
             }
 
             let current = table.sortDescriptors.first
-            if current?.key != sortField.rawValue || current?.ascending != sortAscending {
+            if !isSearchMode,
+               current?.key != sortField.rawValue || current?.ascending != sortAscending {
                 isUpdatingSortDescriptors = true
                 table.sortDescriptors = [
                     NSSortDescriptor(key: sortField.rawValue, ascending: sortAscending)
@@ -180,6 +194,21 @@ extension FileListView {
             }
         }
 
+        /// Search results are ranked by score, so header sorting makes no
+        /// sense there; the extra Location column shows where a hit lives.
+        private func updateLocationColumn(in table: NSTableView) {
+            let existing = table.tableColumns.firstIndex { $0.identifier == Self.locationColumnID }
+            if isSearchMode, existing == nil {
+                let column = NSTableColumn(identifier: Self.locationColumnID)
+                column.title = "Location"
+                column.width = 200
+                table.addTableColumn(column)
+                table.moveColumn(table.numberOfColumns - 1, toColumn: 1)
+            } else if !isSearchMode, let index = existing {
+                table.removeTableColumn(table.tableColumns[index])
+            }
+        }
+
         // MARK: - Data source
 
         func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
@@ -187,9 +216,15 @@ extension FileListView {
         func tableView(
             _ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int
         ) -> NSView? {
-            guard entries.indices.contains(row),
-                  let identifier = tableColumn?.identifier,
-                  let field = SortField(rawValue: identifier.rawValue) else { return nil }
+            guard entries.indices.contains(row), let identifier = tableColumn?.identifier else {
+                return nil
+            }
+            if identifier == Self.locationColumnID {
+                return detailCell(
+                    text: locationText(for: entries[row]), identifier: "locationCell", in: tableView
+                )
+            }
+            guard let field = SortField(rawValue: identifier.rawValue) else { return nil }
             let entry = entries[row]
             switch field {
             case .name:
@@ -203,6 +238,20 @@ extension FileListView {
                     : entry.fileSize.map { Self.sizeFormatter.string(fromByteCount: $0) } ?? "--"
                 return detailCell(text: text, identifier: "sizeCell", in: tableView)
             }
+        }
+
+        /// Parent folder of a hit: relative to the searched root when inside
+        /// it, otherwise ~-abbreviated.
+        private func locationText(for entry: FileBrowserModel.Entry) -> String {
+            let parent = entry.url.deletingLastPathComponent().path
+            if let root = locationRoot?.standardizedFileURL.path {
+                if parent == root { return "·" }
+                if parent.hasPrefix(root + "/") { return String(parent.dropFirst(root.count + 1)) }
+            }
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            if parent == home { return "~" }
+            if parent.hasPrefix(home + "/") { return "~/" + parent.dropFirst(home.count + 1) }
+            return parent
         }
 
         private static let dateFormatter: DateFormatter = {
@@ -300,7 +349,7 @@ extension FileListView {
         func tableView(
             _ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]
         ) {
-            guard !isUpdatingSortDescriptors,
+            guard !isUpdatingSortDescriptors, !isSearchMode,
                   let descriptor = tableView.sortDescriptors.first,
                   let key = descriptor.key,
                   let field = SortField(rawValue: key) else { return }
@@ -384,6 +433,22 @@ extension FileListView {
                     isSyncingSelection = false
                     model.setSelection([url], lead: url)
                 }
+                if isSearchMode {
+                    // Deep-search results allow the read-mostly actions only.
+                    addItem(to: menu, "Open", #selector(menuOpen))
+                    if entries[row].isDirectory {
+                        addItem(to: menu, "Open in New Tab", #selector(menuOpenInNewTab))
+                        addItem(to: menu, "Open in New Window", #selector(menuOpenInNewWindow))
+                    }
+                    menu.addItem(.separator())
+                    addItem(to: menu, "Reveal in Finder", #selector(menuReveal))
+                    addItem(to: menu, "Quick Look", #selector(menuQuickLook))
+                    menu.addItem(.separator())
+                    addItem(to: menu, "Copy", #selector(menuCopy))
+                    menu.addItem(.separator())
+                    addItem(to: menu, "Move to Trash", #selector(menuTrash))
+                    return menu
+                }
                 addItem(to: menu, "Open", #selector(menuOpen))
                 if entries[row].isDirectory {
                     addItem(to: menu, "Open in New Tab", #selector(menuOpenInNewTab))
@@ -405,7 +470,7 @@ extension FileListView {
                 }
                 menu.addItem(.separator())
                 addItem(to: menu, "Move to Trash", #selector(menuTrash))
-            } else {
+            } else if !isSearchMode {
                 addItem(to: menu, "New Folder", #selector(menuNewFolder))
                 if model.pasteboardHasFileURLs {
                     addItem(to: menu, "Paste", #selector(menuPaste))
@@ -455,6 +520,7 @@ extension FileListView {
             proposedRow row: Int,
             proposedDropOperation dropOperation: NSTableView.DropOperation
         ) -> NSDragOperation {
+            guard !isSearchMode else { return [] }
             let urls = fileURLs(from: info)
             guard !urls.isEmpty else { return [] }
             var destination = model.currentURL

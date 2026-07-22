@@ -78,6 +78,8 @@ enum MainMenuBuilder {
     private static func viewMenu() -> NSMenu {
         let menu = NSMenu(title: "View")
         menu.addItem(item("Show Hidden Files", #selector(BrowserWindowController.toggleHiddenFiles(_:)), ".", mask: [.command, .shift]))
+        menu.addItem(.separator())
+        menu.addItem(item("Cycle Search Scope", #selector(BrowserWindowController.cycleSearchScope(_:)), "f"))
         return menu
     }
 
