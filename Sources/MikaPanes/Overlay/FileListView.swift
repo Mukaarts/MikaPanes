@@ -386,6 +386,9 @@ extension FileListView {
                 }
                 addItem(to: menu, "Open", #selector(menuOpen))
                 menu.addItem(.separator())
+                if model.canAddLeadToFavorites {
+                    addItem(to: menu, "Add to Favorites", #selector(menuAddToFavorites))
+                }
                 addItem(to: menu, "Rename", #selector(menuRename))
                 addItem(to: menu, "Duplicate", #selector(menuDuplicate))
                 addItem(to: menu, "Reveal in Finder", #selector(menuReveal))
@@ -414,6 +417,7 @@ extension FileListView {
         }
 
         @objc private func menuOpen(_ sender: Any?) { model.activateSelection() }
+        @objc private func menuAddToFavorites(_ sender: Any?) { model.addLeadToFavorites() }
         @objc private func menuRename(_ sender: Any?) { model.beginRename() }
         @objc private func menuDuplicate(_ sender: Any?) { model.duplicateSelection() }
         @objc private func menuReveal(_ sender: Any?) { model.revealSelection() }

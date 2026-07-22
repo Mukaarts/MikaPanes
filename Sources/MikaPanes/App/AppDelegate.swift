@@ -15,4 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !flag { browser.showWindow() }
         return true
     }
+
+    @objc func showPreferences(_ sender: Any?) {
+        PreferencesWindowController.shared.show()
+    }
 }

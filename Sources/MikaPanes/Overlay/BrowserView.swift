@@ -7,6 +7,7 @@ import QuickLookUI
 /// table itself.
 struct BrowserView: View {
     @ObservedObject var model: FileBrowserModel
+    @ObservedObject var favoritesStore: FavoritesStore
     let keyHandler: (NSEvent) -> Bool
 
     @State private var sidebarDropTarget: URL?
@@ -66,7 +67,7 @@ struct BrowserView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 10)
                 .padding(.bottom, 2)
-            ForEach(Array(model.favorites.enumerated()), id: \.element.id) { index, favorite in
+            ForEach(Array(favoritesStore.favorites.enumerated()), id: \.element.id) { index, favorite in
                 sidebarRow(favorite: favorite, index: index)
             }
             Spacer()
@@ -75,7 +76,7 @@ struct BrowserView: View {
         .background(.quaternary.opacity(0.25))
     }
 
-    private func sidebarRow(favorite: FileBrowserModel.Favorite, index: Int) -> some View {
+    private func sidebarRow(favorite: Favorite, index: Int) -> some View {
         let active = model.currentURL.standardizedFileURL == favorite.url.standardizedFileURL
         let targeted = sidebarDropTarget == favorite.url
         return HStack(spacing: 8) {
@@ -98,6 +99,9 @@ struct BrowserView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { model.navigate(to: favorite.url) }
+        .contextMenu {
+            Button("Remove from Favorites") { favoritesStore.remove(favorite) }
+        }
         .dropDestination(for: URL.self) { urls, _ in
             model.handleDrop(
                 of: urls,

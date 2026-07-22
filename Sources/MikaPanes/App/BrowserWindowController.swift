@@ -39,6 +39,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
         let hosting = NSHostingView(
             rootView: BrowserView(
                 model: model,
+                favoritesStore: model.favoritesStore,
                 keyHandler: { [weak self] event in self?.handleKey(event) ?? false }
             )
         )
@@ -142,7 +143,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
     @objc func moveItemHere(_ sender: Any?) { model.moveItemHere() }
     @objc func toggleHiddenFiles(_ sender: Any?) { model.toggleHiddenFiles() }
     @objc func goUp(_ sender: Any?) { model.goToParent() }
-    @objc func goHome(_ sender: Any?) { model.jumpToFavorite(0) }
+    @objc func goHome(_ sender: Any?) { model.goHome() }
+    @objc func addToFavorites(_ sender: Any?) { model.addLeadToFavorites() }
     @objc func goBack(_ sender: Any?) { model.goBack() }
     @objc func goForward(_ sender: Any?) { model.goForward() }
 
@@ -181,6 +183,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
             return activeFieldEditor != nil || model.pasteboardHasFileURLs
         case #selector(moveItemHere(_:)):
             return model.pasteboardHasFileURLs
+        case #selector(addToFavorites(_:)):
+            return model.canAddLeadToFavorites
         case #selector(toggleHiddenFiles(_:)):
             menuItem.state = model.showHiddenFiles ? .on : .off
             return true
@@ -202,6 +206,10 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
         appItem.submenu = appMenu
         appMenu.addItem(withTitle: "About \(appName)",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
+        // target nil: resolved via the responder chain down to the AppDelegate.
+        appMenu.addItem(withTitle: "Settings…",
+                        action: #selector(AppDelegate.showPreferences(_:)), keyEquivalent: ",")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(appName)",
                         action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
@@ -230,6 +238,8 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
                                  String(UnicodeScalar(NSF2FunctionKey)!))
         renameItem.keyEquivalentModifierMask = []
         addItem(to: fileMenu, "Duplicate", #selector(duplicateItem(_:)), "d")
+        let favorite = addItem(to: fileMenu, "Add to Favorites", #selector(addToFavorites(_:)), "t")
+        favorite.keyEquivalentModifierMask = [.command, .control]
         fileMenu.addItem(.separator())
         let trash = addItem(to: fileMenu, "Move to Trash", #selector(trashItem(_:)), "\u{7F}")
         trash.keyEquivalentModifierMask = [.command]
