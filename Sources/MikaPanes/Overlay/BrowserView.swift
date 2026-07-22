@@ -1,11 +1,15 @@
 import SwiftUI
 import QuickLookUI
 
-/// Finder-like main window content: a favorites sidebar, a file list with live
-/// fuzzy search, and a live preview pane. Keyboard handling lives in the window's
-/// content view; mouse clicks are a convenience.
+/// Finder-like main window content: a favorites sidebar, an AppKit-backed file
+/// list with live fuzzy search, and a live preview pane. Keyboard handling
+/// lives in the window's content view; mouse interaction is handled by the
+/// table itself.
 struct BrowserView: View {
     @ObservedObject var model: FileBrowserModel
+    let keyHandler: (NSEvent) -> Bool
+
+    @State private var sidebarDropTarget: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,7 +23,6 @@ struct BrowserView: View {
                     .frame(minWidth: 280, maxWidth: .infinity)
                 Divider()
                 PreviewPane(url: model.previewURL)
-                    .id(model.previewURL)
                     .frame(width: 320)
             }
             Divider()
@@ -64,24 +67,7 @@ struct BrowserView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 2)
             ForEach(Array(model.favorites.enumerated()), id: \.element.id) { index, favorite in
-                let active = model.currentURL.standardizedFileURL == favorite.url.standardizedFileURL
-                HStack(spacing: 8) {
-                    Image(systemName: favorite.systemImage)
-                        .foregroundStyle(active ? Color.accentColor : .secondary)
-                        .frame(width: 16)
-                    Text(favorite.name).lineLimit(1)
-                    Spacer(minLength: 0)
-                    if index < 9 {
-                        Text("⌘\(index + 1)").font(.caption2).foregroundStyle(.tertiary)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(active ? Color.accentColor.opacity(0.18) : .clear,
-                            in: RoundedRectangle(cornerRadius: 6))
-                .contentShape(Rectangle())
-                .onTapGesture { model.navigate(to: favorite.url) }
-                .padding(.horizontal, 6)
+                sidebarRow(favorite: favorite, index: index)
             }
             Spacer()
         }
@@ -89,65 +75,70 @@ struct BrowserView: View {
         .background(.quaternary.opacity(0.25))
     }
 
+    private func sidebarRow(favorite: FileBrowserModel.Favorite, index: Int) -> some View {
+        let active = model.currentURL.standardizedFileURL == favorite.url.standardizedFileURL
+        let targeted = sidebarDropTarget == favorite.url
+        return HStack(spacing: 8) {
+            Image(systemName: favorite.systemImage)
+                .foregroundStyle(active ? Color.accentColor : .secondary)
+                .frame(width: 16)
+            Text(favorite.name).lineLimit(1)
+            Spacer(minLength: 0)
+            if index < 9 {
+                Text("⌘\(index + 1)").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            targeted
+                ? Color.accentColor.opacity(0.35)
+                : active ? Color.accentColor.opacity(0.18) : .clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { model.navigate(to: favorite.url) }
+        .dropDestination(for: URL.self) { urls, _ in
+            model.handleDrop(
+                of: urls,
+                into: favorite.url,
+                copy: NSEvent.modifierFlags.contains(.option)
+            )
+        } isTargeted: { targeting in
+            if targeting {
+                sidebarDropTarget = favorite.url
+            } else if sidebarDropTarget == favorite.url {
+                sidebarDropTarget = nil
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
     // MARK: - List
 
     private var listColumn: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    let entries = model.filteredEntries
-                    if entries.isEmpty {
-                        Text(model.query.isEmpty ? "Empty folder" : "No matches")
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 24)
-                    }
-                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                        row(for: entry, selected: index == model.selectionIndex)
-                            .id(index)
-                            .onTapGesture(count: 2) {
-                                model.select(entry)
-                                model.activateSelection()
-                            }
-                            .onTapGesture { model.select(entry) }
-                    }
-                }
-            }
-            .onChange(of: model.selectionIndex) { _, newValue in
-                withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(newValue, anchor: .center) }
+        ZStack {
+            FileListView(model: model, keyHandler: keyHandler)
+            if model.filteredEntries.isEmpty {
+                Text(model.query.isEmpty ? "Empty folder" : "No matches")
+                    .foregroundStyle(.tertiary)
+                    .allowsHitTesting(false)
             }
         }
-    }
-
-    private func row(for entry: FileBrowserModel.Entry, selected: Bool) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: entry.isDirectory ? "folder.fill" : "doc")
-                .foregroundStyle(entry.isDirectory ? Color.accentColor : .secondary)
-                .frame(width: 18)
-            Text(entry.name).lineLimit(1)
-            Spacer()
-            if entry.isDirectory {
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(selected ? Color.accentColor.opacity(0.25) : .clear)
-        .contentShape(Rectangle())
     }
 
     // MARK: - Footer
 
     private var footer: some View {
         HStack(spacing: 12) {
-            Text("\(model.filteredEntries.count) items")
+            Text(itemSummary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
             if let status = model.statusMessage {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("↩ open · ⌫ up · Space QL · ⌘R reveal · ⌘⌫ trash · ⌘C/⌘X/⌘V")
+                Text("↩ open · ⌫ up · Space QL · F2 rename · ⌘[/⌘] back/fwd · ⌘C/X/V clipboard")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -156,6 +147,12 @@ struct BrowserView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var itemSummary: String {
+        let total = "\(model.filteredEntries.count) items"
+        let selected = model.selectedURLs.count
+        return selected > 1 ? "\(total) · \(selected) selected" : total
     }
 
     private var pathDisplay: String {
@@ -169,7 +166,7 @@ struct BrowserView: View {
 
 // MARK: - Preview pane
 
-/// Live preview of the highlighted item: an inline QuickLook render plus the
+/// Live preview of the lead selection: an inline QuickLook render plus the
 /// item's name and basic metadata.
 private struct PreviewPane: View {
     let url: URL?
