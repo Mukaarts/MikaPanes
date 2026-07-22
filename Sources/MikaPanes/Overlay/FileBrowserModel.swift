@@ -18,13 +18,6 @@ final class FileBrowserModel: ObservableObject {
         var id: URL { url }
     }
 
-    struct Favorite: Identifiable, Hashable {
-        let name: String
-        let systemImage: String
-        let url: URL
-        var id: URL { url }
-    }
-
     @Published var currentURL: URL
     @Published private(set) var entries: [Entry] = []
     @Published var query: String = "" {
@@ -39,7 +32,7 @@ final class FileBrowserModel: ObservableObject {
     @Published private(set) var sortAscending: Bool
     @Published private(set) var showHiddenFiles: Bool
 
-    let favorites: [Favorite]
+    let favoritesStore: FavoritesStore
     let undoManager = UndoManager()
 
     private let settings: SettingsStore
@@ -65,38 +58,15 @@ final class FileBrowserModel: ObservableObject {
     }
     private var pendingSelectionIntent: SelectionIntent = .reset
 
-    init(root: URL, settings: SettingsStore = .shared) {
+    init(root: URL, settings: SettingsStore = .shared, favoritesStore: FavoritesStore? = nil) {
         self.currentURL = root
         self.settings = settings
+        self.favoritesStore = favoritesStore ?? .shared
         self.sortField = settings.sortField
         self.sortAscending = settings.sortAscending
         self.showHiddenFiles = settings.showHiddenFiles
-        self.favorites = Self.defaultFavorites(root: root)
         startWatching(root)
         reloadDirectory(selecting: .reset)
-    }
-
-    private static func defaultFavorites(root: URL) -> [Favorite] {
-        let fm = FileManager.default
-        func dir(_ d: FileManager.SearchPathDirectory) -> URL? {
-            fm.urls(for: d, in: .userDomainMask).first
-        }
-        var favorites: [Favorite] = [
-            Favorite(name: "Home", systemImage: "house", url: fm.homeDirectoryForCurrentUser)
-        ]
-        if let url = dir(.desktopDirectory) {
-            favorites.append(Favorite(name: "Desktop", systemImage: "menubar.dock.rectangle", url: url))
-        }
-        if let url = dir(.documentDirectory) {
-            favorites.append(Favorite(name: "Documents", systemImage: "doc", url: url))
-        }
-        if let url = dir(.downloadsDirectory) {
-            favorites.append(Favorite(name: "Downloads", systemImage: "arrow.down.circle", url: url))
-        }
-        if !favorites.contains(where: { $0.url.standardizedFileURL == root.standardizedFileURL }) {
-            favorites.append(Favorite(name: root.lastPathComponent, systemImage: "star", url: root))
-        }
-        return favorites
     }
 
     // MARK: - Derived state
@@ -359,8 +329,27 @@ final class FileBrowserModel: ObservableObject {
     }
 
     func jumpToFavorite(_ index: Int) {
+        let favorites = favoritesStore.favorites
         guard favorites.indices.contains(index) else { return }
         navigate(to: favorites[index].url)
+    }
+
+    /// ⇧⌘H goes to the real home directory — favorites are editable, so
+    /// "first favorite" is no longer a stable stand-in.
+    func goHome() {
+        navigate(to: FileManager.default.homeDirectoryForCurrentUser)
+    }
+
+    /// Adds the lead selection (a directory) to the shared favorites.
+    func addLeadToFavorites() {
+        guard let entry = leadEntry, entry.isDirectory else { NSSound.beep(); return }
+        favoritesStore.add(entry.url)
+        statusMessage = "Added \(entry.name) to Favorites"
+    }
+
+    var canAddLeadToFavorites: Bool {
+        guard let entry = leadEntry, entry.isDirectory else { return false }
+        return !favoritesStore.contains(entry.url)
     }
 
     private var currentLocation: NavigationHistory.Location {
