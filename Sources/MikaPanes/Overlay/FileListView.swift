@@ -385,6 +385,10 @@ extension FileListView {
                     model.setSelection([url], lead: url)
                 }
                 addItem(to: menu, "Open", #selector(menuOpen))
+                if entries[row].isDirectory {
+                    addItem(to: menu, "Open in New Tab", #selector(menuOpenInNewTab))
+                    addItem(to: menu, "Open in New Window", #selector(menuOpenInNewWindow))
+                }
                 menu.addItem(.separator())
                 if model.canAddLeadToFavorites {
                     addItem(to: menu, "Add to Favorites", #selector(menuAddToFavorites))
@@ -418,6 +422,14 @@ extension FileListView {
 
         @objc private func menuOpen(_ sender: Any?) { model.activateSelection() }
         @objc private func menuAddToFavorites(_ sender: Any?) { model.addLeadToFavorites() }
+
+        @objc private func menuOpenInNewTab(_ sender: Any?) {
+            if let entry = model.leadEntry, entry.isDirectory { model.openInNewTab?(entry.url) }
+        }
+
+        @objc private func menuOpenInNewWindow(_ sender: Any?) {
+            if let entry = model.leadEntry, entry.isDirectory { model.openInNewWindow?(entry.url) }
+        }
         @objc private func menuRename(_ sender: Any?) { model.beginRename() }
         @objc private func menuDuplicate(_ sender: Any?) { model.duplicateSelection() }
         @objc private func menuReveal(_ sender: Any?) { model.revealSelection() }

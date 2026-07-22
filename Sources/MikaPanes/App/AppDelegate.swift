@@ -2,18 +2,20 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let settings = SettingsStore.shared
-    private lazy var browser = BrowserWindowController(root: settings.browserRoot)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        browser.installMainMenu(appName: "Mika+ Panes")
-        browser.showWindow()
+        MainMenuBuilder.install(appName: "Mika+ Panes")
+        WindowManager.shared.newWindow()
     }
 
-    /// Clicking the Dock icon with no open window reopens the browser window.
+    /// Clicking the Dock icon with no open window reopens a browser window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { browser.showWindow() }
+        if !flag { WindowManager.shared.reopen() }
         return true
+    }
+
+    @objc func newWindow(_ sender: Any?) {
+        WindowManager.shared.newWindow()
     }
 
     @objc func showPreferences(_ sender: Any?) {
