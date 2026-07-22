@@ -35,6 +35,10 @@ final class FileBrowserModel: ObservableObject {
     let favoritesStore: FavoritesStore
     let undoManager = UndoManager()
 
+    /// Injected by the window layer: open a folder in a new window/tab.
+    var openInNewWindow: ((URL) -> Void)?
+    var openInNewTab: ((URL) -> Void)?
+
     private let settings: SettingsStore
     private var history = NavigationHistory()
     private var selectionAnchorURL: URL?
@@ -365,6 +369,13 @@ final class FileBrowserModel: ObservableObject {
         query = ""
         startWatching(url)
         reloadDirectory(selecting: intent)
+    }
+
+    /// Called when the owning window closes: release file descriptors and
+    /// stop publishing.
+    func teardown() {
+        watcher?.stop()
+        watcher = nil
     }
 
     // MARK: - Live watching

@@ -100,6 +100,9 @@ struct BrowserView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.navigate(to: favorite.url) }
         .contextMenu {
+            Button("Open in New Tab") { model.openInNewTab?(favorite.url) }
+            Button("Open in New Window") { model.openInNewWindow?(favorite.url) }
+            Divider()
             Button("Remove from Favorites") { favoritesStore.remove(favorite) }
         }
         .dropDestination(for: URL.self) { urls, _ in
