@@ -172,6 +172,7 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
     @objc func goBack(_ sender: Any?) { model.goBack() }
     @objc func goForward(_ sender: Any?) { model.goForward() }
     @objc func addToFavorites(_ sender: Any?) { model.addLeadToFavorites() }
+    @objc func cycleSearchScope(_ sender: Any?) { model.cycleSearchScope() }
 
     @objc func newWindowForTab(_ sender: Any?) {
         WindowManager.shared.newTab(relativeTo: self)
@@ -203,17 +204,25 @@ final class BrowserWindowController: NSObject, NSWindowDelegate, NSMenuItemValid
             return model.canGoBack
         case #selector(goForward(_:)):
             return model.canGoForward
-        case #selector(renameItem(_:)), #selector(duplicateItem(_:)), #selector(trashItem(_:)),
-             #selector(revealItem(_:)), #selector(quickLookItem(_:)):
+        case #selector(trashItem(_:)), #selector(revealItem(_:)), #selector(quickLookItem(_:)):
             return model.hasSelection
-        case #selector(copyItem(_:)), #selector(cutItem(_:)):
+        case #selector(renameItem(_:)), #selector(duplicateItem(_:)):
+            return model.hasSelection && !model.isDeepSearchActive
+        case #selector(newFolder(_:)):
+            return !model.isDeepSearchActive
+        case #selector(copyItem(_:)):
             return activeFieldEditor != nil || model.hasSelection
+        case #selector(cutItem(_:)):
+            return activeFieldEditor != nil || (model.hasSelection && !model.isDeepSearchActive)
         case #selector(pasteItem(_:)):
-            return activeFieldEditor != nil || model.pasteboardHasFileURLs
+            return activeFieldEditor != nil
+                || (model.pasteboardHasFileURLs && !model.isDeepSearchActive)
         case #selector(moveItemHere(_:)):
-            return model.pasteboardHasFileURLs
+            return model.pasteboardHasFileURLs && !model.isDeepSearchActive
         case #selector(addToFavorites(_:)):
             return model.canAddLeadToFavorites
+        case #selector(cycleSearchScope(_:)):
+            return !model.query.isEmpty
         case #selector(toggleHiddenFiles(_:)):
             menuItem.state = model.showHiddenFiles ? .on : .off
             return true

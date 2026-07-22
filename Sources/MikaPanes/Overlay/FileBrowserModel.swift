@@ -21,8 +21,18 @@ final class FileBrowserModel: ObservableObject {
     @Published var currentURL: URL
     @Published private(set) var entries: [Entry] = []
     @Published var query: String = "" {
-        didSet { if query != oldValue { resetSelectionToFirstMatch() } }
+        didSet {
+            guard query != oldValue else { return }
+            if query.isEmpty { searchScope = .folder }
+            restartSearchIfNeeded()
+            resetSelectionToFirstMatch()
+        }
     }
+    @Published var searchScope: SearchScope = .folder {
+        didSet { if searchScope != oldValue { restartSearchIfNeeded() } }
+    }
+    @Published private(set) var searchStatus: SearchStatus = .idle
+    @Published private(set) var searchResults: [Entry] = []
     @Published private(set) var selectedURLs: Set<URL> = []
     @Published private(set) var leadSelectionURL: URL?
     @Published var statusMessage: String?
@@ -54,6 +64,10 @@ final class FileBrowserModel: ObservableObject {
     /// paste time means "our cut is still current" and turns the paste into a
     /// move. Other apps (Finder) ignore the marker and copy, as they should.
     private var cutPendingChangeCount: Int?
+    private var searchHits: [SearchHit] = []
+    private var searchTask: Task<Void, Never>?
+    private var spotlight: SpotlightSearcher?
+    private var searchGeneration = 0
 
     private enum SelectionIntent {
         case preserve
@@ -75,7 +89,15 @@ final class FileBrowserModel: ObservableObject {
 
     // MARK: - Derived state
 
-    var filteredEntries: [Entry] {
+    /// True while the query runs in a non-local scope; several mutating
+    /// operations (rename, paste, drop, …) are deliberately disabled then.
+    var isDeepSearchActive: Bool { !query.isEmpty && searchScope != .folder }
+
+    /// The single source of truth for what the list shows: the fuzzy-filtered
+    /// folder contents, or the streamed search results in a deep scope.
+    var displayedEntries: [Entry] { isDeepSearchActive ? searchResults : filteredEntries }
+
+    private var filteredEntries: [Entry] {
         guard !query.isEmpty else { return entries }
         return entries
             .compactMap { entry -> (Entry, Int)? in
@@ -91,12 +113,12 @@ final class FileBrowserModel: ObservableObject {
     }
 
     var selectedEntries: [Entry] {
-        filteredEntries.filter { selectedURLs.contains($0.url) }
+        displayedEntries.filter { selectedURLs.contains($0.url) }
     }
 
     var leadEntry: Entry? {
         guard let lead = leadSelectionURL else { return nil }
-        return filteredEntries.first { $0.url == lead }
+        return displayedEntries.first { $0.url == lead }
     }
 
     var previewURL: URL? { leadSelectionURL }
@@ -125,14 +147,14 @@ final class FileBrowserModel: ObservableObject {
     }
 
     func selectAll() {
-        let list = filteredEntries
+        let list = displayedEntries
         guard !list.isEmpty else { return }
         selectedURLs = Set(list.map(\.url))
         if leadSelectionURL == nil { leadSelectionURL = list.first?.url }
     }
 
     func moveSelection(by delta: Int, extending: Bool = false) {
-        let list = filteredEntries
+        let list = displayedEntries
         guard !list.isEmpty else { return }
         guard let leadIndex = leadSelectionURL.flatMap({ url in list.firstIndex { $0.url == url } }) else {
             let index = delta >= 0 ? 0 : list.count - 1
@@ -153,7 +175,7 @@ final class FileBrowserModel: ObservableObject {
     }
 
     private func resetSelectionToFirstMatch() {
-        if let first = filteredEntries.first {
+        if let first = displayedEntries.first {
             setSelection([first.url], lead: first.url)
         } else {
             setSelection([], lead: nil)
@@ -196,18 +218,23 @@ final class FileBrowserModel: ObservableObject {
         let contents = (try? fm.contentsOfDirectory(
             at: url, includingPropertiesForKeys: Array(keys), options: options
         )) ?? []
-        let mapped = contents.map { url -> Entry in
-            let values = try? url.resourceValues(forKeys: keys)
-            return Entry(
-                url: url,
-                name: url.lastPathComponent,
-                isDirectory: values?.isDirectory ?? false,
-                isHidden: values?.isHidden ?? false,
-                modificationDate: values?.contentModificationDate,
-                fileSize: (values?.fileSize).map(Int64.init)
-            )
-        }
-        return EntrySorting.sorted(mapped, by: field, ascending: ascending)
+        return EntrySorting.sorted(contents.map(makeEntry(for:)), by: field, ascending: ascending)
+    }
+
+    /// Shared Entry factory for directory loads and search engines.
+    nonisolated static func makeEntry(for url: URL) -> Entry {
+        let keys: Set<URLResourceKey> = [
+            .isDirectoryKey, .isHiddenKey, .contentModificationDateKey, .fileSizeKey
+        ]
+        let values = try? url.resourceValues(forKeys: keys)
+        return Entry(
+            url: url,
+            name: url.lastPathComponent,
+            isDirectory: values?.isDirectory ?? false,
+            isHidden: values?.isHidden ?? false,
+            modificationDate: values?.contentModificationDate,
+            fileSize: (values?.fileSize).map(Int64.init)
+        )
     }
 
     private func finishLoad(_ loaded: [Entry], generation: Int, url: URL) {
@@ -221,6 +248,12 @@ final class FileBrowserModel: ObservableObject {
 
     private func applyEntries(_ newEntries: [Entry]) {
         entries = newEntries
+        // During a deep search the list shows search results — watcher-driven
+        // reloads must not touch the selection.
+        guard !isDeepSearchActive else {
+            pendingSelectionIntent = .preserve
+            return
+        }
         switch pendingSelectionIntent {
         case .reset:
             resetSelectionToFirstMatch()
@@ -376,6 +409,90 @@ final class FileBrowserModel: ObservableObject {
     func teardown() {
         watcher?.stop()
         watcher = nil
+        searchTask?.cancel()
+        searchTask = nil
+        spotlight?.stop()
+        spotlight = nil
+    }
+
+    // MARK: - Search
+
+    func cycleSearchScope() {
+        guard !query.isEmpty else { NSSound.beep(); return }
+        searchScope = searchScope.next
+    }
+
+    private func restartSearchIfNeeded() {
+        searchTask?.cancel()
+        searchTask = nil
+        spotlight?.stop()
+        spotlight = nil
+        searchGeneration += 1
+        searchHits = []
+        searchResults = []
+        guard isDeepSearchActive else {
+            searchStatus = .idle
+            return
+        }
+        searchStatus = .searching
+        let generation = searchGeneration
+        let searchQuery = query
+        switch searchScope {
+        case .folder:
+            break
+        case .subtree:
+            let root = currentURL
+            let includeHidden = showHiddenFiles
+            searchTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                await SubtreeSearcher.search(
+                    root: root, query: searchQuery, includeHidden: includeHidden
+                ) { hits, finished, capped in
+                    self?.appendSearchHits(hits, finished: finished, capped: capped, generation: generation)
+                }
+            }
+        case .spotlight:
+            searchTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let self else { return }
+                self.spotlight = SpotlightSearcher(searchString: searchQuery) { [weak self] entries, finished, capped in
+                    self?.replaceSpotlightResults(
+                        entries, query: searchQuery, finished: finished, capped: capped, generation: generation
+                    )
+                }
+            }
+        }
+    }
+
+    private func appendSearchHits(_ hits: [SearchHit], finished: Bool, capped: Bool, generation: Int) {
+        guard generation == searchGeneration else { return }
+        if !hits.isEmpty {
+            searchHits = SubtreeSearcher.merge(searchHits, adding: hits)
+            searchResults = searchHits.map(\.entry)
+            if selectedURLs.isEmpty { resetSelectionToFirstMatch() }
+        }
+        if finished {
+            searchStatus = capped ? .capped(searchResults.count) : .done(searchResults.count)
+        }
+    }
+
+    /// Spotlight reports full snapshots (live updates), not increments —
+    /// re-rank the whole set with the fuzzy scorer each time.
+    private func replaceSpotlightResults(
+        _ entries: [Entry], query searchQuery: String, finished: Bool, capped: Bool, generation: Int
+    ) {
+        guard generation == searchGeneration else { return }
+        let hits = entries.compactMap { entry -> SearchHit? in
+            guard let score = FuzzyMatcher.score(entry.name, query: searchQuery) else { return nil }
+            return SearchHit(entry: entry, score: score)
+        }
+        searchHits = SubtreeSearcher.merge([], adding: hits)
+        searchResults = searchHits.map(\.entry)
+        if selectedURLs.isEmpty { resetSelectionToFirstMatch() }
+        if finished {
+            searchStatus = capped ? .capped(searchResults.count) : .done(searchResults.count)
+        }
     }
 
     // MARK: - Live watching
@@ -442,6 +559,11 @@ final class FileBrowserModel: ObservableObject {
             }
             undoManager.setActionName("Move to Trash")
         }
+        if isDeepSearchActive {
+            let trashed = Set(result.succeededPairs.map { $0.from.standardizedFileURL })
+            searchHits.removeAll { trashed.contains($0.entry.url.standardizedFileURL) }
+            searchResults = searchHits.map(\.entry)
+        }
         statusMessage = "Trashed \(result.summary)"
         reloadDirectory(selecting: .preserve)
     }
@@ -488,7 +610,7 @@ final class FileBrowserModel: ObservableObject {
     // MARK: - Rename
 
     func beginRename() {
-        guard let entry = leadEntry else { NSSound.beep(); return }
+        guard !isDeepSearchActive, let entry = leadEntry else { NSSound.beep(); return }
         renamingURL = entry.url
     }
 
@@ -541,6 +663,7 @@ final class FileBrowserModel: ObservableObject {
     // MARK: - New folder & duplicate
 
     func createNewFolder() {
+        guard !isDeepSearchActive else { NSSound.beep(); return }
         switch FileActionsService.createFolder(in: currentURL) {
         case .success(let url):
             undoManager.registerUndo(withTarget: self) { model in
@@ -558,7 +681,7 @@ final class FileBrowserModel: ObservableObject {
 
     func duplicateSelection() {
         let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
+        guard !isDeepSearchActive, !targets.isEmpty else { NSSound.beep(); return }
         let result = FileActionsService.duplicate(targets)
         let created = result.succeededPairs.compactMap(\.to)
         if !created.isEmpty {
@@ -583,7 +706,7 @@ final class FileBrowserModel: ObservableObject {
 
     func cutSelection() {
         let targets = actionTargets
-        guard !targets.isEmpty else { NSSound.beep(); return }
+        guard !isDeepSearchActive, !targets.isEmpty else { NSSound.beep(); return }
         writeToPasteboard(targets)
         cutPendingChangeCount = NSPasteboard.general.changeCount
         cutPendingURLs = Set(targets.map(\.standardizedFileURL))
@@ -592,7 +715,7 @@ final class FileBrowserModel: ObservableObject {
 
     func paste() {
         let urls = readPasteboardFileURLs()
-        guard !urls.isEmpty else { NSSound.beep(); return }
+        guard !isDeepSearchActive, !urls.isEmpty else { NSSound.beep(); return }
         let isPendingCut = cutPendingChangeCount == NSPasteboard.general.changeCount
         // Either way the cut marker is spent: a foreign pasteboard write (other
         // app copied something) must also stop dimming the previously cut rows.
@@ -608,7 +731,7 @@ final class FileBrowserModel: ObservableObject {
     /// whether they were put there by ⌘C or ⌘X — including by other apps.
     func moveItemHere() {
         let urls = readPasteboardFileURLs()
-        guard !urls.isEmpty else { NSSound.beep(); return }
+        guard !isDeepSearchActive, !urls.isEmpty else { NSSound.beep(); return }
         clearCutMark()
         performMove(urls, to: currentURL)
     }

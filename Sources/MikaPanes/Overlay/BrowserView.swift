@@ -45,6 +45,7 @@ struct BrowserView: View {
                 .foregroundStyle(.secondary)
             Spacer()
             if !model.query.isEmpty {
+                scopePicker
                 Text(model.query)
                     .font(.system(.body, design: .monospaced))
                     .padding(.horizontal, 8)
@@ -55,6 +56,29 @@ struct BrowserView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.bar)
+    }
+
+    /// Search scope segments, visible while a query is active (⌘F cycles).
+    private var scopePicker: some View {
+        HStack(spacing: 2) {
+            ForEach(SearchScope.allCases, id: \.self) { scope in
+                Button {
+                    model.searchScope = scope
+                } label: {
+                    Text(scope.label)
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            model.searchScope == scope ? Color.accentColor.opacity(0.25) : .clear,
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(.quaternary.opacity(0.5), in: Capsule())
     }
 
     // MARK: - Sidebar
@@ -126,12 +150,17 @@ struct BrowserView: View {
     private var listColumn: some View {
         ZStack {
             FileListView(model: model, keyHandler: keyHandler)
-            if model.filteredEntries.isEmpty {
-                Text(model.query.isEmpty ? "Empty folder" : "No matches")
+            if model.displayedEntries.isEmpty {
+                Text(emptyPlaceholder)
                     .foregroundStyle(.tertiary)
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    private var emptyPlaceholder: String {
+        if model.query.isEmpty { return "Empty folder" }
+        return model.searchStatus == .searching ? "Searching…" : "No matches"
     }
 
     // MARK: - Footer
@@ -141,6 +170,9 @@ struct BrowserView: View {
             Text(itemSummary)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let search = searchStatusText {
+                Text(search).font(.caption).foregroundStyle(.secondary)
+            }
             Spacer()
             if let status = model.statusMessage {
                 Text(status).font(.caption).foregroundStyle(.secondary)
@@ -157,9 +189,18 @@ struct BrowserView: View {
     }
 
     private var itemSummary: String {
-        let total = "\(model.filteredEntries.count) items"
+        let total = "\(model.displayedEntries.count) items"
         let selected = model.selectedURLs.count
         return selected > 1 ? "\(total) · \(selected) selected" : total
+    }
+
+    private var searchStatusText: String? {
+        guard model.isDeepSearchActive else { return nil }
+        switch model.searchStatus {
+        case .searching: return "Searching…"
+        case .capped(let count): return "Showing first \(count) matches"
+        default: return nil
+        }
     }
 
     private var pathDisplay: String {
